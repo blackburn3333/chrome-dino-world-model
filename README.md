@@ -17,8 +17,9 @@ real game for every training step.
 
 ## Current status
 
-As of October 11, 2026, the environment and first offline-data workflow are
-operational. Model training has not started yet.
+As of October 11, 2026, the environment, offline-data workflow, and first
+vision-model training stage are operational. World-dynamics and policy training
+have not started yet.
 
 | Area | Status | Details |
 | --- | --- | --- |
@@ -31,7 +32,9 @@ operational. Model training has not started yet.
 | Collected dataset | Available | Includes 10,000 aligned frame/action samples in `dataset/dino_data.npz` and a 5 x 5 preview grid. |
 | Dataset inspector | Implemented | Reports shapes, dtypes, and action distribution and provides interactive frame-by-frame playback. |
 | Replay and sequence pipeline | Planned | Rewards, terminal flags, episode boundaries, replay sampling, and train/validation sequences are not implemented yet. |
-| VAE representation model | Planned | Frame encoder/decoder training is not implemented yet. |
+| VAE representation model | Prototype | A convolutional VAE compresses 64 x 64 frames into a 16-dimensional stochastic latent space and reconstructs them. |
+| VAE training | Implemented | Trains for 20 epochs with Adam using reconstruction and KL-divergence losses, with automatic CUDA/CPU selection. |
+| Vision artifacts | Generated | Training produces `checkpoints/vae_dino.pth` and a source-versus-reconstruction comparison image. |
 | RSSM world model | Planned | Latent dynamics, reward, and continuation models are not implemented yet. |
 | Latent policy learning | Planned | Actor-critic training in imagined trajectories is not implemented yet. |
 | Evaluation and tests | Planned | Reproducible benchmarks and automated tests still need to be added. |
@@ -56,12 +59,16 @@ chrome-dino-world-model/
 ├── data_inspector.py   # Dataset summary and interactive frame player
 ├── dataset/
 │   ├── dino_data.npz   # 10,000 collected frame/action pairs
-│   └── preview_grid.png
+│   ├── preview_grid.png
+│   └── vae_reconstruction_test.png
+├── checkpoints/
+│   └── vae_dino.pth    # Trained VAE state dictionary
 ├── game_room/
 │   ├── __init__.py     # Package definition
 │   ├── dino.py         # Selenium environment and frame preprocessing
 │   └── dino_run.py     # Random-action environment demonstration
 ├── requirements.txt    # Pinned dependencies for the current prototype
+├── train_vae.py         # Convolutional VAE architecture and training pipeline
 └── README.md
 ```
 
@@ -83,11 +90,7 @@ python -m venv .venv
 # Windows PowerShell
 .venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-python -m pip install Pillow
 ```
-
-`Pillow` is currently installed separately because it has not yet been added to
-the pinned requirements file.
 
 ### Environment demonstration
 
@@ -136,6 +139,34 @@ The inspector prints dataset metadata and action counts, then replays frames in
 collection order. Use `Space` to pause or resume, `A` and `D` to move backward
 or forward while paused, and `Q` to exit.
 
+### Training the vision model
+
+Train the convolutional variational autoencoder on the collected frames:
+
+```bash
+python train_vae.py
+```
+
+The current training configuration:
+
+- Normalizes `uint8` frames from `[0, 255]` to `[0, 1]`
+- Uses shuffled batches of 64 observations
+- Encodes each frame into a 16-dimensional Gaussian latent representation
+- Optimizes summed pixel reconstruction error plus KL divergence
+- Trains for 20 epochs with Adam at a learning rate of `1e-3`
+- Uses CUDA when available and falls back to the CPU
+
+After training, the script writes:
+
+- `checkpoints/vae_dino.pth`, containing the model state dictionary
+- `dataset/vae_reconstruction_test.png`, comparing five source frames with their
+  reconstructions
+
+The current reconstruction diagnostic is shown below. Each row contains an
+original observation on the left and its VAE reconstruction on the right.
+
+![VAE source and reconstruction comparison](dataset/vae_reconstruction_test.png)
+
 ## Limitations
 
 - No trained reinforcement learning agent or world model exists yet.
@@ -147,8 +178,12 @@ or forward while paused, and `Q` to exit.
   explicit episode boundaries are not preserved in the dataset yet.
 - The current collector overwrites its fixed output paths instead of versioning
   collection runs.
-- `Pillow` is required by the capture pipeline but is not pinned in
-  `requirements.txt` yet.
+- VAE training uses the full dataset without a train/validation split, early
+  stopping, checkpoint metadata, or quantitative validation metrics.
+- VAE hyperparameters are currently hard-coded, and the declared KL-tolerance
+  argument is reserved for future use rather than applied by the loss function.
+- Reconstruction quality has only been checked on a small sample from the
+  training dataset; generalization has not been evaluated yet.
 - Error handling, logging, configuration, and automated test coverage are still
   minimal.
 
@@ -158,7 +193,8 @@ or forward while paused, and `Q` to exit.
 - Complete reproducible dependency and runtime configuration.
 - Extend collection to store rewards, terminal flags, and episode boundaries.
 - Add replay sampling and train/validation sequence generation.
-- Implement and train the VAE observation model.
+- Add VAE validation, configurable hyperparameters, and quantitative metrics.
+- Evaluate and improve latent representations for downstream dynamics learning.
 - Implement the RSSM latent dynamics model.
 - Add reward and continuation prediction heads.
 - Train an actor-critic policy using imagined latent trajectories.
