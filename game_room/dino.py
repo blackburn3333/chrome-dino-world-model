@@ -15,6 +15,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from webdriver_manager.chrome import ChromeDriverManager
 import random
+from PIL import Image
+import io
 
 
 class ChromeDinoEnv:
@@ -56,6 +58,22 @@ class ChromeDinoEnv:
 
     # Allow the internal game page to initialize its canvas and Runner object.
     time.sleep(1)
+
+    # Expand the runner container to the browser viewport. This gives Selenium
+    # a consistently large element screenshot from which the active playfield
+    # can be cropped, regardless of Chrome's default Dino page positioning.
+    js_fill_screen = """
+    var style = document.createElement('style');
+    style.innerHTML = `
+        body, html { margin: 0; padding: 0; overflow: hidden; width: 100%; height: 100%; }
+        .runner-container { position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 100% !important; transform: none !important; }
+        canvas.runner-canvas { width: 100% !important; height: 100% !important; }
+    `;
+    document.head.appendChild(style);
+    """
+    self.driver.execute_script(js_fill_screen)
+
+    # Keyboard actions are sent to the document body throughout each episode.
     self.body = self.driver.find_element(By.TAG_NAME, "body")
 
   def reset(self) -> np.ndarray:
@@ -190,27 +208,60 @@ class ChromeDinoEnv:
       return False
 
   def _get_screen_frame(self) -> np.ndarray:
-    """Capture the game canvas as a resized grayscale NumPy observation."""
-    # Export the canvas as a PNG data URL and strip its MIME/prefix portion so
-    # Python receives only the Base64-encoded image bytes.
-    js_script = (
-        "var canvas = document.querySelector('canvas.runner-canvas');"
-        "return canvas ? canvas.toDataURL('image/png').substring(22) : null;"
-    )
-    canvas_b64 = self.driver.execute_script(js_script)
+    """Capture and normalize the visible playfield for model consumption.
 
-    if not canvas_b64:
-      # Preserve the observation shape while the canvas is unavailable.
+    Returns:
+      A thresholded grayscale observation resized to ``self.frame_size``. If
+      Selenium, Pillow, or OpenCV cannot capture/process the frame, a zero-filled
+      observation of the expected shape is returned instead.
+    """
+    try:
+      # Capture only the runner container rather than the entire browser window,
+      # excluding browser chrome and unrelated page content from the dataset.
+      container = self.driver.find_element(
+        By.CSS_SELECTOR, "div.runner-container"
+      )
+      element_png = container.screenshot_as_png
+
+      # Pillow decodes Selenium's in-memory PNG; NumPy then exposes its pixels
+      # in a format suitable for OpenCV preprocessing.
+      image = Image.open(io.BytesIO(element_png))
+      img_np = np.array(image)
+
+      # Step 1: Normalize RGB/RGBA screenshots to one grayscale channel. Keep an
+      # already-grayscale capture unchanged.
+      if len(img_np.shape) == 3:
+        gray = cv2.cvtColor(
+          img_np,
+          cv2.COLOR_RGBA2GRAY
+          if img_np.shape[2] == 4
+          else cv2.COLOR_RGB2GRAY,
+        )
+      else:
+        gray = img_np
+
+      # Step 2: Normalize Chrome's dark theme to the light-background convention
+      # used by the default game. The top-left pixel represents the background.
+      if gray[0, 0] < 128:
+        gray = cv2.bitwise_not(gray)
+
+      # Step 3: Retain the left side containing the Dino and approaching obstacle
+      # track. Limit the crop to the actual screenshot width on smaller windows.
+      h, w = gray.shape[:2]
+      crop_w = min(350, w)
+      roi = gray[:, :crop_w]
+
+      # Step 4: Threshold antialiased pixels into a crisp, high-contrast image so
+      # visual models do not need to learn irrelevant rendering variations.
+      _, thresh = cv2.threshold(roi, 210, 255, cv2.THRESH_BINARY)
+
+      # Step 5: Downsample to the configured observation resolution.
+      resized = cv2.resize(thresh, self.frame_size, interpolation=cv2.INTER_AREA)
+      return resized
+
+    except Exception:
+      # Maintain a stable observation contract during transient capture errors.
       return np.zeros(self.frame_size, dtype=np.uint8)
-
-    # Decode PNG bytes into an OpenCV BGR image.
-    img_bytes = base64.b64decode(canvas_b64)
-    img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-    image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-
-    # Grayscale and downsampling reduce the amount of data used by an agent.
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    return cv2.resize(gray, self.frame_size, interpolation=cv2.INTER_AREA)
 
   def close(self) -> None:
     """Close the Chrome window and terminate its WebDriver session."""
