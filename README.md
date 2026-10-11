@@ -17,23 +17,28 @@ real game for every training step.
 
 ## Current status
 
-As of October 2026, the project contains the first environment prototype:
+As of October 11, 2026, the environment and first offline-data workflow are
+operational. Model training has not started yet.
 
 | Area | Status | Details |
 | --- | --- | --- |
 | Chrome Dino environment | Implemented | Launches `chrome://dino` through Selenium and exposes `reset()` and `step()` methods. |
-| Visual observations | Implemented | Captures the game canvas and converts it to a configurable grayscale NumPy frame (64 x 64 by default). |
+| Visual observations | Implemented | Captures the active runner area and normalizes it into thresholded grayscale NumPy frames (64 x 64 by default). |
 | Action controls | Implemented | Supports run, jump, crouch, and fast-drop inputs. |
 | Rewards and episode endings | Prototype | Gives a small survival reward and detects collisions through the game's JavaScript state. |
 | Demo loop | Implemented | Samples weighted random actions and displays the processed observation with OpenCV. |
-| Data collection pipeline | Planned | Replay storage and training-sequence generation are not implemented yet. |
+| Data collector | Prototype | Runs a weighted-random policy, pairs observations with actions, resets after collisions, and saves compressed NumPy data. |
+| Collected dataset | Available | Includes 10,000 aligned frame/action samples in `dataset/dino_data.npz` and a 5 x 5 preview grid. |
+| Dataset inspector | Implemented | Reports shapes, dtypes, and action distribution and provides interactive frame-by-frame playback. |
+| Replay and sequence pipeline | Planned | Rewards, terminal flags, episode boundaries, replay sampling, and train/validation sequences are not implemented yet. |
 | VAE representation model | Planned | Frame encoder/decoder training is not implemented yet. |
 | RSSM world model | Planned | Latent dynamics, reward, and continuation models are not implemented yet. |
 | Latent policy learning | Planned | Actor-critic training in imagined trajectories is not implemented yet. |
 | Evaluation and tests | Planned | Reproducible benchmarks and automated tests still need to be added. |
 
-The current random controller is an environment test only. It does not learn
-from experience and should not be interpreted as the final agent.
+The current random controller and collector generate exploratory data only.
+They do not learn from experience and should not be interpreted as the final
+agent.
 
 ## How the finished system is intended to work
 
@@ -46,10 +51,18 @@ from experience and should not be interpreted as the final agent.
 ## Repository structure
 
 ```text
-game_room/
-├── __init__.py   # Package definition
-├── dino.py       # Selenium environment and frame preprocessing
-└── dino_run.py   # Random-action environment demonstration
+chrome-dino-world-model/
+├── data_collection.py  # Random-policy observation/action data collector
+├── data_inspector.py   # Dataset summary and interactive frame player
+├── dataset/
+│   ├── dino_data.npz   # 10,000 collected frame/action pairs
+│   └── preview_grid.png
+├── game_room/
+│   ├── __init__.py     # Package definition
+│   ├── dino.py         # Selenium environment and frame preprocessing
+│   └── dino_run.py     # Random-action environment demonstration
+├── requirements.txt    # Pinned dependencies for the current prototype
+└── README.md
 ```
 
 More model, training, configuration, and evaluation modules will be introduced
@@ -57,17 +70,26 @@ as development progresses.
 
 ## Running the current prototype
 
-### Requirements
+### Setup
 
-- Python 3.9 or newer
+- Python 3.10 or newer
 - Google Chrome
 - A desktop session capable of displaying the Chrome and OpenCV windows
 
-Install the current Python dependencies:
+Create and activate a virtual environment, then install the pinned dependencies:
 
 ```bash
-python -m pip install numpy opencv-python selenium webdriver-manager
+python -m venv .venv
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m pip install Pillow
 ```
+
+`Pillow` is currently installed separately because it has not yet been added to
+the pinned requirements file.
+
+### Environment demonstration
 
 From the repository root, run:
 
@@ -82,6 +104,38 @@ provided to a future agent. Press `q` in the OpenCV preview window to stop.
 `webdriver-manager` may download a compatible ChromeDriver the first time the
 prototype starts, so an internet connection can be required on the first run.
 
+### Collecting data
+
+Run the current weighted-random collector:
+
+```bash
+python data_collection.py
+```
+
+The default run collects up to 10,000 `(frame, action)` pairs. It displays the
+processed model input while running and automatically resets the environment
+after a collision. Press `q` in the preview window to stop early and save the
+samples collected so far.
+
+The collector writes:
+
+- `dataset/dino_data.npz`, containing `frames` (`uint8`) and `actions` (`int64`)
+- `dataset/preview_grid.png`, containing 25 randomly selected observations
+
+Running the collector again overwrites these files.
+
+### Inspecting collected data
+
+Launch the dataset summary and interactive player:
+
+```bash
+python data_inspector.py
+```
+
+The inspector prints dataset metadata and action counts, then replays frames in
+collection order. Use `Space` to pause or resume, `A` and `D` to move backward
+or forward while paused, and `Q` to exit.
+
 ## Limitations
 
 - No trained reinforcement learning agent or world model exists yet.
@@ -89,15 +143,21 @@ prototype starts, so an internet connection can be required on the first run.
   which may change between Chrome versions.
 - Browser and keyboard behavior has not yet been tested across operating
   systems or in headless mode.
-- Dependency versions are not pinned yet.
+- The collector stores frames and actions only; rewards, terminal flags, and
+  explicit episode boundaries are not preserved in the dataset yet.
+- The current collector overwrites its fixed output paths instead of versioning
+  collection runs.
+- `Pillow` is required by the capture pipeline but is not pinned in
+  `requirements.txt` yet.
 - Error handling, logging, configuration, and automated test coverage are still
   minimal.
 
 ## Roadmap
 
-- Stabilize and test the game environment.
-- Add reproducible configuration and dependency management.
-- Build an experience replay and data collection pipeline.
+- Stabilize and test the game environment across platforms.
+- Complete reproducible dependency and runtime configuration.
+- Extend collection to store rewards, terminal flags, and episode boundaries.
+- Add replay sampling and train/validation sequence generation.
 - Implement and train the VAE observation model.
 - Implement the RSSM latent dynamics model.
 - Add reward and continuation prediction heads.

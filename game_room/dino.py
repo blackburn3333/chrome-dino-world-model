@@ -18,6 +18,7 @@ import random
 from PIL import Image
 import io
 
+
 class ChromeDinoEnv:
   """Expose Chrome's built-in Dino game through an environment-style API.
 
@@ -58,6 +59,9 @@ class ChromeDinoEnv:
     # Allow the internal game page to initialize its canvas and Runner object.
     time.sleep(1)
 
+    # Expand the runner container to the browser viewport. This gives Selenium
+    # a consistently large element screenshot from which the active playfield
+    # can be cropped, regardless of Chrome's default Dino page positioning.
     js_fill_screen = """
     var style = document.createElement('style');
     style.innerHTML = `
@@ -69,6 +73,7 @@ class ChromeDinoEnv:
     """
     self.driver.execute_script(js_fill_screen)
 
+    # Keyboard actions are sent to the document body throughout each episode.
     self.body = self.driver.find_element(By.TAG_NAME, "body")
 
   def reset(self) -> np.ndarray:
@@ -203,17 +208,28 @@ class ChromeDinoEnv:
       return False
 
   def _get_screen_frame(self) -> np.ndarray:
-    """Captures active playfield (Dino + incoming obstacle track) and sharpens into a 64x64 frame."""
+    """Capture and normalize the visible playfield for model consumption.
+
+    Returns:
+      A thresholded grayscale observation resized to ``self.frame_size``. If
+      Selenium, Pillow, or OpenCV cannot capture/process the frame, a zero-filled
+      observation of the expected shape is returned instead.
+    """
     try:
+      # Capture only the runner container rather than the entire browser window,
+      # excluding browser chrome and unrelated page content from the dataset.
       container = self.driver.find_element(
         By.CSS_SELECTOR, "div.runner-container"
       )
       element_png = container.screenshot_as_png
 
+      # Pillow decodes Selenium's in-memory PNG; NumPy then exposes its pixels
+      # in a format suitable for OpenCV preprocessing.
       image = Image.open(io.BytesIO(element_png))
       img_np = np.array(image)
 
-      # 1. Convert to Grayscale
+      # Step 1: Normalize RGB/RGBA screenshots to one grayscale channel. Keep an
+      # already-grayscale capture unchanged.
       if len(img_np.shape) == 3:
         gray = cv2.cvtColor(
           img_np,
@@ -224,24 +240,27 @@ class ChromeDinoEnv:
       else:
         gray = img_np
 
-      # 2. Invert dark mode so background is light (255) and game elements are dark (0)
+      # Step 2: Normalize Chrome's dark theme to the light-background convention
+      # used by the default game. The top-left pixel represents the background.
       if gray[0, 0] < 128:
         gray = cv2.bitwise_not(gray)
 
-      # 3. WIDER CROP: Capture Dino (left) + active obstacle area (right)
-      # The canvas is roughly 600x150. Crop the first 350px horizontally.
+      # Step 3: Retain the left side containing the Dino and approaching obstacle
+      # track. Limit the crop to the actual screenshot width on smaller windows.
       h, w = gray.shape[:2]
       crop_w = min(350, w)
       roi = gray[:, :crop_w]
 
-      # 4. Sharpen image with thresholding to make sprites crisp
+      # Step 4: Threshold antialiased pixels into a crisp, high-contrast image so
+      # visual models do not need to learn irrelevant rendering variations.
       _, thresh = cv2.threshold(roi, 210, 255, cv2.THRESH_BINARY)
 
-      # 5. Downsample to target 64x64 resolution
+      # Step 5: Downsample to the configured observation resolution.
       resized = cv2.resize(thresh, self.frame_size, interpolation=cv2.INTER_AREA)
       return resized
 
     except Exception:
+      # Maintain a stable observation contract during transient capture errors.
       return np.zeros(self.frame_size, dtype=np.uint8)
 
   def close(self) -> None:
