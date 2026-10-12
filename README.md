@@ -6,9 +6,10 @@ world from pixels.
 
 The long-term goal is to build the learning system from scratch in PyTorch. The
 planned agent will use a Variational Autoencoder (VAE) to compress game frames,
-a Recurrent State-Space Model (RSSM) to predict future latent states, and latent
-imagination (or "dreaming") to improve its policy without interacting with the
-real game for every training step.
+an action-conditioned Mixture Density Network Recurrent Neural Network
+(MDN-RNN) to model possible future latent states, and latent imagination (or
+"dreaming") to improve its policy without interacting with the real game for
+every training step.
 
 > [!WARNING]
 > **Early development / pre-alpha:** this repository is public for development
@@ -17,9 +18,9 @@ real game for every training step.
 
 ## Current status
 
-As of October 11, 2026, the environment, offline-data workflow, and first
-vision-model training stage are operational. World-dynamics and policy training
-have not started yet.
+As of October 12, 2026, the environment, offline-data workflow, VAE vision
+model, and latent-encoding stage are operational. The recurrent dynamics model
+and policy training have not started yet.
 
 | Area | Status | Details |
 | --- | --- | --- |
@@ -35,7 +36,9 @@ have not started yet.
 | VAE representation model | Prototype | A convolutional VAE compresses 64 x 64 frames into a 16-dimensional stochastic latent space and reconstructs them. |
 | VAE training | Implemented | Trains for 20 epochs with Adam using reconstruction and KL-divergence losses, with automatic CUDA/CPU selection. |
 | Vision artifacts | Generated | Training produces `checkpoints/vae_dino.pth` and a source-versus-reconstruction comparison image. |
-| RSSM world model | Planned | Latent dynamics, reward, and continuation models are not implemented yet. |
+| Latent encoding | Implemented | Uses the trained VAE posterior mean to encode all 10,000 frames while preserving aligned actions. |
+| Latent dataset | Available | `dataset/dino_latents.npz` contains float32 latents shaped `(10000, 16)` and 10,000 aligned action IDs. |
+| MDN-RNN world model | Planned | Recurrent dynamics, Gaussian-mixture outputs, sequence training, and next-latent prediction are not implemented yet. |
 | Latent policy learning | Planned | Actor-critic training in imagined trajectories is not implemented yet. |
 | Evaluation and tests | Planned | Reproducible benchmarks and automated tests still need to be added. |
 
@@ -47,7 +50,8 @@ agent.
 
 1. Collect game frames, actions, rewards, and terminal signals from Chrome Dino.
 2. Encode image observations into compact latent representations with a VAE.
-3. Train an RSSM to predict how latent states evolve after each action.
+3. Train an MDN-RNN to predict a distribution over the next latent state after
+   each action.
 4. Imagine possible future trajectories inside the learned world model.
 5. Train a policy from those imagined outcomes and evaluate it in the real game.
 
@@ -59,8 +63,10 @@ chrome-dino-world-model/
 ├── data_inspector.py   # Dataset summary and interactive frame player
 ├── dataset/
 │   ├── dino_data.npz   # 10,000 collected frame/action pairs
+│   ├── dino_latents.npz # 10,000 latent/action pairs for dynamics training
 │   ├── preview_grid.png
 │   └── vae_reconstruction_test.png
+├── encode_latents.py   # VAE frame-to-latent preprocessing stage
 ├── checkpoints/
 │   └── vae_dino.pth    # Trained VAE state dictionary
 ├── game_room/
@@ -167,6 +173,35 @@ original observation on the left and its VAE reconstruction on the right.
 
 ![VAE source and reconstruction comparison](dataset/vae_reconstruction_test.png)
 
+### Encoding the latent dataset
+
+After training the VAE, convert every collected frame into the compact
+representation required by the future MDN-RNN:
+
+```bash
+python encode_latents.py
+```
+
+The encoder:
+
+- Reconstructs the 16-dimensional VAE architecture and loads
+  `checkpoints/vae_dino.pth`
+- Normalizes the collected frames exactly as they were normalized for training
+- Processes frames in batches of 128 using CUDA when available
+- Uses the posterior mean instead of stochastic samples to create repeatable
+  latent targets
+- Preserves the original action order for future
+  `(latent_t, action_t) -> latent_(t+1)` transitions
+
+The output is `dataset/dino_latents.npz`, containing:
+
+- `latents`: float32 array shaped `(10000, 16)`
+- `actions`: int64 array shaped `(10000,)`
+
+This file is the input dataset for the planned MDN-RNN training stage. The
+current repository does not yet contain the recurrent model or mixture-density
+loss.
+
 ## Limitations
 
 - No trained reinforcement learning agent or world model exists yet.
@@ -184,6 +219,13 @@ original observation on the left and its VAE reconstruction on the right.
   argument is reserved for future use rather than applied by the loss function.
 - Reconstruction quality has only been checked on a small sample from the
   training dataset; generalization has not been evaluated yet.
+- Latent preprocessing uses posterior means, which provides stable targets but
+  does not preserve the VAE posterior uncertainty in the saved dataset.
+- The latent archive preserves collection order but has no explicit episode
+  boundaries. These must be added before forming reliable recurrent sequences
+  across game resets.
+- No MDN-RNN architecture, recurrent hidden-state handling, Gaussian-mixture
+  objective, or dynamics evaluation exists yet.
 - Error handling, logging, configuration, and automated test coverage are still
   minimal.
 
@@ -195,7 +237,9 @@ original observation on the left and its VAE reconstruction on the right.
 - Add replay sampling and train/validation sequence generation.
 - Add VAE validation, configurable hyperparameters, and quantitative metrics.
 - Evaluate and improve latent representations for downstream dynamics learning.
-- Implement the RSSM latent dynamics model.
+- Record episode boundaries and build fixed-length latent/action sequences.
+- Implement the action-conditioned MDN-RNN and Gaussian-mixture loss.
+- Train and evaluate next-latent predictions across multiple time horizons.
 - Add reward and continuation prediction heads.
 - Train an actor-critic policy using imagined latent trajectories.
 - Compare the learned policy against random and model-free baselines.
