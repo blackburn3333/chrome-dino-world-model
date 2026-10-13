@@ -19,9 +19,9 @@ every training step.
 ## Current status
 
 As of October 13, 2026, the environment, offline-data workflow, VAE vision
-model, latent encoder, and first MDN-RNN training pipeline are operational.
-Dream rollouts, controller training, and end-to-end evaluation have not started
-yet.
+model, latent encoder, MDN-RNN, and first online controller-training pipeline
+are operational. Dream rollouts and reproducible end-to-end evaluation have not
+started yet.
 
 | Area | Status | Details |
 | --- | --- | --- |
@@ -42,12 +42,15 @@ yet.
 | MDN-RNN world model | Prototype | Uses a 256-unit LSTM and five diagonal-Gaussian components to model the next 16-dimensional latent state. |
 | MDN-RNN training | Implemented | Trains for 30 epochs with Adam by minimizing mixture negative log-likelihood over shuffled sequence batches. |
 | Dynamics checkpoint | Generated | Training produces `checkpoints/rnn_dino.pth`; predictive quality has not yet been validated. |
-| Latent policy learning | Planned | Actor-critic training in imagined trajectories is not implemented yet. |
+| Controller policy | Prototype | A linear policy maps the current 16-dimensional VAE latent and 256-dimensional RNN hidden state to four action logits. |
+| Controller training | Implemented | Runs 50 real Chrome episodes and updates the controller with normalized-return REINFORCE while keeping the VAE and MDN-RNN frozen. |
+| Controller checkpoint | Generated | Training produces `checkpoints/controller_dino.pth`; independent policy evaluation has not yet been implemented. |
+| Imagined policy learning | Planned | Controller or actor-critic training inside sampled MDN-RNN trajectories is not implemented yet. |
 | Evaluation and tests | Planned | Reproducible benchmarks and automated tests still need to be added. |
 
-The current random controller and collector generate exploratory data only.
-They do not learn from experience and should not be interpreted as the final
-agent.
+The random collector still generates exploratory training data only. The new
+controller does learn from rewards, but it is an early online policy-gradient
+prototype and should not be interpreted as a complete world-model agent.
 
 ## How the finished system is intended to work
 
@@ -71,13 +74,15 @@ chrome-dino-world-model/
 │   └── vae_reconstruction_test.png
 ├── encode_latents.py   # VAE frame-to-latent preprocessing stage
 ├── checkpoints/
-│   ├── rnn_dino.pth    # Trained MDN-RNN state dictionary
+│   ├── controller_dino.pth # Trained controller state dictionary
+│   ├── rnn_dino.pth        # Trained MDN-RNN state dictionary
 │   └── vae_dino.pth    # Trained VAE state dictionary
 ├── game_room/
 │   ├── __init__.py     # Package definition
 │   ├── dino.py         # Selenium environment and frame preprocessing
 │   └── dino_run.py     # Random-action environment demonstration
 ├── requirements.txt    # Pinned dependencies for the current prototype
+├── train_controller.py  # Online REINFORCE controller training pipeline
 ├── train_rnn.py         # MDN-RNN architecture, loss, and training pipeline
 ├── train_vae.py         # Convolutional VAE architecture and training pipeline
 └── README.md
@@ -230,9 +235,49 @@ Training writes `checkpoints/rnn_dino.pth`, containing the MDN-RNN state
 dictionary. The checkpoint records learned parameters only, so inference code
 must reconstruct the same latent, action, hidden-state, and mixture dimensions.
 
+### Training the controller
+
+After producing the VAE and MDN-RNN checkpoints, train the controller in the
+real Chrome Dino environment:
+
+```bash
+python train_controller.py
+```
+
+For every environment step, the training loop:
+
+1. Normalizes the current 64 x 64 frame and encodes its deterministic
+   16-dimensional VAE posterior mean.
+2. Concatenates that latent with the MDN-RNN's 256-dimensional hidden state.
+3. Uses a linear policy to produce a categorical distribution over run, jump,
+   crouch, and fast-drop actions.
+4. Samples and applies an action in the real game.
+5. Advances the frozen MDN-RNN memory with the current latent and one-hot action.
+6. Stores the action log-probability and environment reward for the episode-level
+   policy update.
+
+The current controller configuration:
+
+- Trains for 50 complete browser episodes
+- Uses REINFORCE with a discount factor of `0.99`
+- Normalizes discounted returns within each episode
+- Updates only the linear controller; VAE and MDN-RNN inference runs without
+  gradient tracking
+- Uses Adam with a learning rate of `1e-3`
+- Uses CUDA when available and falls back to the CPU
+
+Training writes `checkpoints/controller_dino.pth`. The controller checkpoint is
+only meaningful alongside compatible VAE and MDN-RNN checkpoints with the same
+latent and hidden dimensions.
+
+This stage uses the MDN-RNN hidden state as memory but trains entirely from real
+browser interaction. It does not yet sample the MDN-RNN mixture distribution or
+optimize the policy in imagined trajectories.
+
 ## Limitations
 
-- No trained controller or end-to-end game-playing world-model agent exists yet.
+- A controller checkpoint exists, but there is no separate evaluation runner or
+  evidence yet that it consistently outperforms the random policy.
 - The environment relies on Chrome's internal `runnerInstance` JavaScript API,
   which may change between Chrome versions.
 - Browser and keyboard behavior has not yet been tested across operating
@@ -258,6 +303,12 @@ must reconstruct the same latent, action, hidden-state, and mixture dimensions.
   require clamping for robust training on larger or more varied datasets.
 - The recurrent checkpoint has not yet been used for sampled future rollouts,
   multi-step prediction visualization, or latent imagination.
+- Controller training uses vanilla Monte Carlo REINFORCE without a learned
+  value baseline, entropy bonus, advantage estimation, or gradient clipping.
+- Controller episodes have no explicit maximum length, and training does not
+  support resuming from an existing controller checkpoint.
+- Controller training occurs in the real browser rather than inside the learned
+  world model, so it does not yet realize the project's latent-dreaming goal.
 - Error handling, logging, configuration, and automated test coverage are still
   minimal.
 
@@ -273,8 +324,10 @@ must reconstruct the same latent, action, hidden-state, and mixture dimensions.
 - Evaluate next-latent predictions across multiple time horizons.
 - Implement mixture sampling and visualize imagined latent rollouts.
 - Add reward and continuation prediction heads.
+- Build a deterministic controller evaluation runner and compare it with random
+  and scripted baselines.
 - Train an actor-critic policy using imagined latent trajectories.
-- Compare the learned policy against random and model-free baselines.
+- Compare imagined policy learning against online and model-free baselines.
 - Add checkpoints, metrics, visualizations, and reproducible evaluations.
 
 ## Contributing
