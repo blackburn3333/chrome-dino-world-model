@@ -2,7 +2,7 @@
 Filename: manual_data_collection.py
 Author: Jayendra Matarage
 Created on: 11/10/2026 7:50 PM
-Description: 
+Description: Records fixed-rate, episode-aware human Chrome Dino gameplay.
 """
 import os
 import sys
@@ -32,9 +32,14 @@ def on_press(key):
 
 def on_release(key):
     global current_action
-    current_action = 0
+    # Ignore unrelated key releases. Resetting on every released key can label
+    # a held jump or crouch as RUN even though the gameplay key is still down.
+    if key in (keyboard.Key.space, keyboard.Key.up) and current_action == 1:
+        current_action = 0
+    elif key == keyboard.Key.down and current_action == 2:
+        current_action = 0
 
-def collect_manual_data(target_steps: int = 10000):
+def collect_manual_data(target_steps: int = 10000, sample_hz: float = 20.0):
   global current_action  # <--- ADD THIS LINE HERE
 
   os.makedirs("dataset", exist_ok=True)
@@ -45,6 +50,9 @@ def collect_manual_data(target_steps: int = 10000):
   listener.start()
 
   frames, actions = [], []
+  rewards, dones, episode_ids, timestamps = [], [], [], []
+  episode_id = 0
+  collection_started = time.monotonic()
 
   print("=" * 60)
   print("MANUAL DATA COLLECTION STARTED")
@@ -62,22 +70,32 @@ def collect_manual_data(target_steps: int = 10000):
     state = env.reset()
 
     while len(frames) < target_steps:
-      # Capture action state right before execution
+      sample_started = time.monotonic()
+      # The physical key press already controls the focused Chrome window. The
+      # listener is used only to label that transition; do not inject it again.
       act = current_action
+      # Use a stable sampling interval so transition duration is not determined
+      # solely by screenshot and UI-rendering speed.
+      remaining = (1.0 / sample_hz) - (time.monotonic() - sample_started)
+      if remaining > 0:
+        time.sleep(remaining)
+      next_state, reward, done, _ = env.observe()
 
-      # Step environment with human action
-      next_state, _, done, _ = env.step(act)
+      frames.append(state)
+      actions.append(act)
+      rewards.append(reward)
+      dones.append(done)
+      # Every sample receives the episode it belongs to. The terminal sample is
+      # stored before incrementing the ID, preserving the final transition.
+      episode_ids.append(episode_id)
+      timestamps.append(time.monotonic() - collection_started)
 
-      if not done:
-        frames.append(state)
-        actions.append(act)
-        state = next_state
-      else:
-        # Auto-restart on collision without appending crashed frame
+      if done:
+        episode_id += 1
         state = env.reset()
         current_action = 0
-        time.sleep(0.3)
-        continue
+      else:
+        state = next_state
 
       # Render live preview telemetry
       preview = cv2.resize(
@@ -117,9 +135,23 @@ def collect_manual_data(target_steps: int = 10000):
   if len(frames) > 0:
     frames_arr = np.array(frames, dtype=np.uint8)
     actions_arr = np.array(actions, dtype=np.int64)
+    rewards_arr = np.array(rewards, dtype=np.float32)
+    dones_arr = np.array(dones, dtype=bool)
+    episode_ids_arr = np.array(episode_ids, dtype=np.int64)
+    timestamps_arr = np.array(timestamps, dtype=np.float64)
 
+    # Save all arrays together so their indices remain aligned throughout VAE,
+    # recurrent-model, and behavior-cloning preprocessing.
     dataset_path = "dataset/dino_data.npz"
-    np.savez_compressed(dataset_path, frames=frames_arr, actions=actions_arr)
+    np.savez_compressed(
+        dataset_path,
+        frames=frames_arr,
+        actions=actions_arr,
+        rewards=rewards_arr,
+        dones=dones_arr,
+        episode_ids=episode_ids_arr,
+        timestamps=timestamps_arr,
+    )
     print(f"\nSuccessfully collected {len(frames_arr)} human gameplay frames!")
     print(f"Saved dataset to: {dataset_path}")
   else:

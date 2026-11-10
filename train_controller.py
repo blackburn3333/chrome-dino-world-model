@@ -49,19 +49,23 @@ class Controller(nn.Module):
         # Default input width is 16 latent features plus 256 recurrent features.
         self.fc = nn.Linear(z_dim + hidden_dim, action_dim)
 
-    def forward(self, z, h):
-        """Return an action distribution conditioned on visual and memory state.
+    def get_logits(self, z, h):
+        """Return raw action logits for imitation or policy-gradient training.
 
         Args:
             z: Current encoded observation shaped ``(batch, z_dim)``.
             h: Current recurrent hidden state shaped ``(batch, hidden_dim)``.
         """
-        # Concatenate current visual evidence with the recurrent history summary.
+        # Exposing logits separately avoids reconstructing or reaching inside
+        # the module when supervised behavior cloning needs cross-entropy loss.
         state = torch.cat([z, h], dim=-1)
-        # Categorical accepts raw logits and normalizes them internally, retaining
-        # a differentiable log-probability for the policy-gradient update.
-        logits = self.fc(state)
-        return Categorical(logits=logits)
+        return self.fc(state)
+
+    def forward(self, z, h):
+        """Return an action distribution conditioned on visual and memory state."""
+        # Categorical retains differentiable log-probabilities for REINFORCE,
+        # while ``get_logits`` lets behavior cloning use cross-entropy directly.
+        return Categorical(logits=self.get_logits(z, h))
 
 
 # --- Step 2: Online policy-gradient training ---------------------------------
@@ -87,10 +91,20 @@ def train_controller() -> None:
     rnn.load_state_dict(torch.load("checkpoints/rnn_dino.pth", map_location=device))
     rnn.eval()
 
-    # Initialize controller C from scratch. The optimizer receives controller
-    # parameters only, leaving the loaded VAE and MDN-RNN weights unchanged.
+    # Begin with demonstrated behavior when a behavior-cloning checkpoint is
+    # available. Falling back to random initialization keeps the original
+    # online-only workflow usable for fresh repositories.
     controller = Controller(z_dim=16, hidden_dim=256, action_dim=4).to(device)
-    optimizer = optim.Adam(controller.parameters(), lr=1e-3)
+    bc_path = "checkpoints/controller_bc_dino.pth"
+    if os.path.exists(bc_path):
+        controller.load_state_dict(torch.load(bc_path, map_location=device))
+        print(f"Initialized controller from demonstrations: {bc_path}")
+    else:
+        print("No behavior-cloning checkpoint found; starting controller randomly.")
+
+    # A smaller fine-tuning rate reduces catastrophic forgetting of the human
+    # policy while the controller adapts through online rewards.
+    optimizer = optim.Adam(controller.parameters(), lr=1e-4)
 
     # Train over complete episodes and discount later rewards by gamma per step.
     episodes = 50

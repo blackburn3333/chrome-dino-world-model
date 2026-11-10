@@ -21,10 +21,12 @@ every training step.
 As of November 10, 2026, the environment, offline-data workflow, VAE vision
 model, latent encoder, MDN-RNN, online controller-training pipeline, real-game
 evaluation runner, and first sampled dream rollout have been implemented.
-The first controller evaluation did not produce reliable gameplay. The current
-working hypothesis is that the weighted-random dataset does not provide enough
-high-quality behavior and lacks episode boundaries, so the next development
-stage is human-play data collection followed by episode-aware retraining.
+After the first controller evaluation failed, a manual-play collector,
+episode-aware sequence handling, and behavior-cloning stage were added. The
+current behavior-cloning checkpoint reached 83.2% held-out action accuracy on
+the legacy 3,458-frame human dataset. Its real-game performance has not yet
+been revalidated, so this metric is evidence of imitation rather than a solved
+game-playing policy.
 
 | Area | Status | Details |
 | --- | --- | --- |
@@ -34,30 +36,33 @@ stage is human-play data collection followed by episode-aware retraining.
 | Rewards and episode endings | Prototype | Gives a small survival reward and detects collisions through the game's JavaScript state. |
 | Demo loop | Implemented | Samples weighted random actions and displays the processed observation with OpenCV. |
 | Data collector | Prototype | Runs a weighted-random policy, pairs observations with actions, resets after collisions, and saves compressed NumPy data. |
-| Collected dataset | Available | Includes 10,000 aligned frame/action samples in `dataset/dino_data.npz` and a 5 x 5 preview grid. |
+| Manual collector | Implemented | Records human keyboard actions at a fixed rate without reinjecting them, including rewards, terminal flags, episode IDs, and timestamps. |
+| Collected dataset | Available, legacy format | Includes 3,458 human-play frame/action samples. This archive predates the new reward, terminal, episode-ID, and timestamp fields. |
 | Dataset inspector | Implemented | Reports shapes, dtypes, and action distribution and provides interactive frame-by-frame playback. |
-| Sequence pipeline | Prototype | Builds overlapping 32-step `(latent, action)` windows and one-step-shifted latent targets; episode boundaries are not represented yet. |
+| Sequence pipeline | Prototype | Builds overlapping 32-step `(latent, action)` windows and excludes windows that cross recorded episode boundaries. |
 | VAE representation model | Prototype | A convolutional VAE compresses 64 x 64 frames into a 16-dimensional stochastic latent space and reconstructs them. |
 | VAE training | Implemented | Trains for 20 epochs with Adam using reconstruction and KL-divergence losses, with automatic CUDA/CPU selection. |
 | Vision artifacts | Generated | Training produces `checkpoints/vae_dino.pth` and a source-versus-reconstruction comparison image. |
-| Latent encoding | Implemented | Uses the trained VAE posterior mean to encode all 10,000 frames while preserving aligned actions. |
-| Latent dataset | Available | `dataset/dino_latents.npz` contains float32 latents shaped `(10000, 16)` and 10,000 aligned action IDs. |
+| Latent encoding | Implemented | Uses the trained VAE posterior mean while preserving aligned actions and any available temporal metadata. |
+| Latent dataset | Available | `dataset/dino_latents.npz` currently contains float32 latents shaped `(3458, 16)` and 3,458 aligned action IDs. |
 | MDN-RNN world model | Prototype | Uses a 256-unit LSTM and five diagonal-Gaussian components to model the next 16-dimensional latent state. |
 | MDN-RNN training | Implemented | Trains for 30 epochs with Adam by minimizing mixture negative log-likelihood over shuffled sequence batches. |
 | Dynamics checkpoint | Generated | Training produces `checkpoints/rnn_dino.pth`; predictive quality has not yet been validated. |
 | Controller policy | Prototype | A linear policy maps the current 16-dimensional VAE latent and 256-dimensional RNN hidden state to four action logits. |
-| Controller training | Implemented | Runs 50 real Chrome episodes and updates the controller with normalized-return REINFORCE while keeping the VAE and MDN-RNN frozen. |
-| Controller checkpoint | Generated, unsuccessful evaluation | `checkpoints/controller_dino.pth` loads in the evaluation pipeline, but the resulting policy has not demonstrated reliable gameplay. |
-| Real-game evaluation | Prototype | `evaluate_controller.py` runs the controller deterministically in Chrome and displays episode, action, step, and reward telemetry. The initial evaluation failed to establish a useful policy. |
+| Behavior cloning | Implemented, initial checkpoint generated | `train_controller_bc.py` trains on recorded human actions with class-weighted cross-entropy. The current checkpoint reached 83.2% held-out action accuracy. |
+| Controller fine-tuning | Implemented | Initializes from the behavior-cloning checkpoint when available, then runs 50 real Chrome episodes with normalized-return REINFORCE. |
+| Controller checkpoints | Generated | `controller_bc_dino.pth` contains the demonstrated policy; `controller_dino.pth` contains the earlier online policy that failed evaluation. |
+| Real-game evaluation | Prototype | `evaluate_controller.py` prefers the behavior-cloning checkpoint and displays episode, action, step, and reward telemetry. The new checkpoint still needs repeated real-game evaluation. |
 | Dream rollout | Prototype | `dream_hallucination.py` samples the MDN-RNN, decodes predicted latents, and generated `dino_dream.mp4`; dream quality has not been validated quantitatively. |
 | Imagined policy learning | Planned | Controller or actor-critic training inside sampled MDN-RNN trajectories is not implemented yet. |
 | Evaluation benchmarks and tests | Planned | Random/scripted baselines, repeated evaluation metrics, and automated tests still need to be added. |
 
-The weighted-random collector produced enough data to exercise the complete
-training pipeline, but not enough evidence of useful learned behavior. The
-generated checkpoints are experimental artifacts rather than validated models.
-Manual gameplay collection, explicit episode metadata, and behavior-cloning
-pretraining are the next planned steps before another controller evaluation.
+The manual dataset now influences the controller directly through behavior
+cloning instead of only shaping the VAE and MDN-RNN. Because the current archive
+was collected before episode metadata was added, the behavior-cloning trainer
+uses its safe latent-only fallback and disables RNN-input weights. A fresh
+episode-aware collection is still needed to train and validate the full
+latent-plus-memory controller.
 
 ## How the finished system is intended to work
 
@@ -75,16 +80,18 @@ chrome-dino-world-model/
 ├── data_collection.py  # Random-policy observation/action data collector
 ├── data_inspector.py   # Dataset summary and interactive frame player
 ├── dataset/
-│   ├── dino_data.npz   # 10,000 collected frame/action pairs
-│   ├── dino_latents.npz # 10,000 latent/action pairs for dynamics training
+│   ├── dino_data.npz   # 3,458 current human-play frame/action pairs
+│   ├── dino_latents.npz # 3,458 latent/action pairs for dynamics training
 │   ├── preview_grid.png
 │   └── vae_reconstruction_test.png
 ├── encode_latents.py   # VAE frame-to-latent preprocessing stage
 ├── evaluate_controller.py # Deterministic real-game controller evaluation
 ├── dream_hallucination.py # Sampled latent rollout and video generation
 ├── dino_dream.mp4      # First generated 200-step dream-rollout video
+├── manual_data_collection.py # Fixed-rate human demonstration collector
 ├── checkpoints/
 │   ├── controller_dino.pth # Trained controller state dictionary
+│   ├── controller_bc_dino.pth # Behavior-cloned controller state dictionary
 │   ├── rnn_dino.pth        # Trained MDN-RNN state dictionary
 │   └── vae_dino.pth    # Trained VAE state dictionary
 ├── game_room/
@@ -93,6 +100,7 @@ chrome-dino-world-model/
 │   └── dino_run.py     # Random-action environment demonstration
 ├── requirements.txt    # Pinned dependencies for the current prototype
 ├── train_controller.py  # Online REINFORCE controller training pipeline
+├── train_controller_bc.py # Supervised human-action imitation pipeline
 ├── train_rnn.py         # MDN-RNN architecture, loss, and training pipeline
 ├── train_vae.py         # Convolutional VAE architecture and training pipeline
 └── README.md
@@ -152,6 +160,22 @@ The collector writes:
 - `dataset/preview_grid.png`, containing 25 randomly selected observations
 
 Running the collector again overwrites these files.
+
+### Collecting human demonstrations
+
+Run the manual collector and keep the Chrome window focused while playing:
+
+```bash
+python manual_data_collection.py
+```
+
+The collector samples at 20 Hz and observes physical keyboard input without
+sending each action to Chrome a second time. New archives contain aligned
+`frames`, `actions`, `rewards`, `dones`, `episode_ids`, and `timestamps` arrays.
+The terminal transition is retained before the collector resets the game.
+
+Collection overwrites `dataset/dino_data.npz`, so back up a dataset before
+starting another run if it should be preserved.
 
 ### Inspecting collected data
 
@@ -215,8 +239,11 @@ The encoder:
 
 The output is `dataset/dino_latents.npz`, containing:
 
-- `latents`: float32 array shaped `(10000, 16)`
-- `actions`: int64 array shaped `(10000,)`
+- `latents`: float32 array currently shaped `(3458, 16)`
+- `actions`: int64 array currently shaped `(3458,)`
+
+When present in the source archive, `rewards`, `dones`, `episode_ids`, and
+`timestamps` are copied into the latent archive without changing sample order.
 
 This file is the input dataset for recurrent-dynamics training.
 
@@ -231,6 +258,8 @@ python train_rnn.py
 The current recurrent training configuration:
 
 - Forms overlapping windows of 32 consecutive transitions
+- Rejects windows that cross a terminal flag or episode-ID boundary when that
+  metadata is available
 - Concatenates each 16-dimensional latent with a four-class one-hot action
 - Predicts the next latent at every position in each window
 - Uses a single 256-unit LSTM with zero-initialized state for each shuffled window
@@ -245,7 +274,26 @@ Training writes `checkpoints/rnn_dino.pth`, containing the MDN-RNN state
 dictionary. The checkpoint records learned parameters only, so inference code
 must reconstruct the same latent, action, hidden-state, and mixture dimensions.
 
-### Training the controller
+### Training the controller from demonstrations
+
+After encoding the manually collected dataset and training the MDN-RNN, train
+the controller to imitate the recorded actions:
+
+```bash
+python train_controller_bc.py
+```
+
+The trainer uses class-weighted cross-entropy to reduce RUN-class dominance and
+saves the best validation checkpoint to
+`checkpoints/controller_bc_dino.pth`. When episode metadata is available, it
+reconstructs the RNN memory state separately inside each episode. Older
+datasets without boundaries are still supported through a safe latent-only
+fallback that disables the controller's RNN-input weights.
+
+`evaluate_controller.py` prefers this behavior-cloning checkpoint when it is
+available.
+
+### Fine-tuning the controller online
 
 After producing the VAE and MDN-RNN checkpoints, train the controller in the
 real Chrome Dino environment:
@@ -254,7 +302,9 @@ real Chrome Dino environment:
 python train_controller.py
 ```
 
-For every environment step, the training loop:
+When `checkpoints/controller_bc_dino.pth` exists, online training initializes
+from the demonstrated policy and uses a reduced `1e-4` learning rate. For every
+environment step, the training loop:
 
 1. Normalizes the current 64 x 64 frame and encodes its deterministic
    16-dimensional VAE posterior mean.
@@ -273,7 +323,7 @@ The current controller configuration:
 - Normalizes discounted returns within each episode
 - Updates only the linear controller; VAE and MDN-RNN inference runs without
   gradient tracking
-- Uses Adam with a learning rate of `1e-3`
+- Uses Adam with a fine-tuning learning rate of `1e-4`
 - Uses CUDA when available and falls back to the CPU
 
 Training writes `checkpoints/controller_dino.pth`. The controller checkpoint is
@@ -286,16 +336,17 @@ optimize the policy in imagined trajectories.
 
 ## Limitations
 
-- The initial controller evaluation failed to demonstrate reliable gameplay;
-  there is no evidence that it outperforms a random or scripted baseline.
+- The earlier online controller failed to demonstrate reliable gameplay. The
+  behavior-cloned replacement has better offline imitation accuracy but has not
+  yet been shown to outperform a random or scripted real-game baseline.
 - The real-game evaluator exists, but it does not yet aggregate metrics across
   runs, enforce deterministic seeds, or compare policies under matched trials.
 - The environment relies on Chrome's internal `runnerInstance` JavaScript API,
   which may change between Chrome versions.
 - Browser and keyboard behavior has not yet been tested across operating
   systems or in headless mode.
-- The collector stores frames and actions only; rewards, terminal flags, and
-  explicit episode boundaries are not preserved in the dataset yet.
+- The current 3,458-frame archive predates episode metadata. Newly collected
+  archives preserve rewards, terminal flags, episode IDs, and timestamps.
 - The current collector overwrites its fixed output paths instead of versioning
   collection runs.
 - Weighted-random collection produces many low-value transitions and does not
@@ -308,9 +359,9 @@ optimize the policy in imagined trajectories.
   training dataset; generalization has not been evaluated yet.
 - Latent preprocessing uses posterior means, which provides stable targets but
   does not preserve the VAE posterior uncertainty in the saved dataset.
-- The latent archive preserves collection order but has no explicit episode
-  boundaries. Some MDN-RNN windows can therefore cross game resets and treat a
-  discontinuity as normal environment dynamics.
+- Older latent archives have no explicit episode boundaries and must use the
+  behavior-cloning trainer's latent-only fallback. Newly encoded archives carry
+  metadata through and recurrent windows exclude resets.
 - MDN-RNN training has no train/validation split, early stopping, gradient
   clipping, checkpoint metadata, or quantitative prediction benchmarks.
 - Log-standard-deviations are unconstrained before exponentiation, which may
@@ -329,15 +380,13 @@ optimize the policy in imagined trajectories.
 
 ## Roadmap
 
-- Add manual-play collection with consistent sampling and aligned action labels.
-- Store rewards, terminal flags, timestamps, and episode IDs for every sample.
 - Retrain the VAE and MDN-RNN on curated human gameplay without allowing
   recurrent training windows to cross episode boundaries.
-- Add behavior-cloning pretraining from recorded human actions before online
-  controller fine-tuning.
+- Recollect demonstrations with the new episode-aware archive format and train
+  the behavior clone with valid RNN memory features.
 - Stabilize and test the game environment across platforms.
 - Complete reproducible dependency and runtime configuration.
-- Make sequence generation episode-aware and add train/validation splits.
+- Add episode-level train/validation splits to VAE and MDN-RNN training.
 - Add VAE validation, configurable hyperparameters, and quantitative metrics.
 - Evaluate and improve latent representations for downstream dynamics learning.
 - Add MDN-RNN validation, gradient clipping, and configurable hyperparameters.

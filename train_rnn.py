@@ -27,13 +27,20 @@ class DinoSequenceDataset(Dataset):
     This teaches the recurrent model to predict how an action changes the latent
     game state while retaining temporal context through its LSTM.
 
-    Note:
-        The current latent archive does not record episode boundaries. Until
-        boundary metadata is collected, some windows may span a collision/reset
-        and present that discontinuity to the model as an ordinary transition.
+    When episode IDs or terminal flags are available, windows crossing a reset
+    are rejected. Legacy archives without metadata retain the original sliding-
+    window behavior for backward compatibility.
     """
 
-    def __init__(self, latents, actions, seq_len=32, num_actions=4):
+    def __init__(
+        self,
+        latents,
+        actions,
+        seq_len=32,
+        num_actions=4,
+        episode_ids=None,
+        dones=None,
+    ):
         """Prepare contiguous training windows from encoded gameplay.
 
         Args:
@@ -56,17 +63,30 @@ class DinoSequenceDataset(Dataset):
         self.targets = latents.astype(np.float32)
 
         # A sequence needs ``seq_len`` inputs plus one following latent target.
-        # Sliding the window by one produces N - seq_len overlapping samples.
-        self.num_samples = len(self.inputs) - self.seq_len
+        # Retain only windows that do not cross a recorded crash/reset boundary.
+        candidate_starts = range(max(0, len(self.inputs) - self.seq_len))
+        self.valid_starts = []
+        for start in candidate_starts:
+            end = start + self.seq_len
+            # The target sequence reaches index ``end``, so both endpoints must
+            # belong to the same episode for the complete window to be valid.
+            if episode_ids is not None and episode_ids[start] != episode_ids[end]:
+                continue
+            # A terminal input before the final target means the window would
+            # model a browser reset as an ordinary environment transition.
+            if dones is not None and np.any(dones[start:end]):
+                continue
+            self.valid_starts.append(start)
 
     def __len__(self):
         """Return the number of valid temporal windows in the dataset."""
-        return max(0, self.num_samples)
+        return len(self.valid_starts)
 
     def __getitem__(self, idx):
         """Return one input window and its one-step-shifted latent targets."""
-        x_seq = self.inputs[idx: idx + self.seq_len]
-        y_seq = self.targets[idx + 1: idx + self.seq_len + 1]
+        start = self.valid_starts[idx]
+        x_seq = self.inputs[start: start + self.seq_len]
+        y_seq = self.targets[start + 1: start + self.seq_len + 1]
         # DataLoader will stack these into tensors shaped
         # (batch_size, seq_len, feature_dim).
         return torch.tensor(x_seq), torch.tensor(y_seq)
@@ -193,9 +213,22 @@ def train_rnn() -> None:
 
     data = np.load(latents_path)
     latents, actions = data["latents"], data["actions"]
+    episode_ids = data["episode_ids"] if "episode_ids" in data.files else None
+    dones = data["dones"] if "dones" in data.files else None
 
     # Build overlapping 32-transition windows and shuffle their order each epoch.
-    dataset = DinoSequenceDataset(latents, actions, seq_len=32)
+    dataset = DinoSequenceDataset(
+        latents,
+        actions,
+        seq_len=32,
+        episode_ids=episode_ids,
+        dones=dones,
+    )
+    if len(dataset) == 0:
+        raise ValueError(
+            "No valid 32-step sequences found. Collect longer episodes or "
+            "reduce the sequence length."
+        )
     dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
 
     # Predict five possible next-latent distributions from a 256-feature LSTM.
