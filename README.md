@@ -18,10 +18,13 @@ every training step.
 
 ## Current status
 
-As of October 13, 2026, the environment, offline-data workflow, VAE vision
-model, latent encoder, MDN-RNN, and first online controller-training pipeline
-are operational. Dream rollouts and reproducible end-to-end evaluation have not
-started yet.
+As of November 10, 2026, the environment, offline-data workflow, VAE vision
+model, latent encoder, MDN-RNN, online controller-training pipeline, real-game
+evaluation runner, and first sampled dream rollout have been implemented.
+The first controller evaluation did not produce reliable gameplay. The current
+working hypothesis is that the weighted-random dataset does not provide enough
+high-quality behavior and lacks episode boundaries, so the next development
+stage is human-play data collection followed by episode-aware retraining.
 
 | Area | Status | Details |
 | --- | --- | --- |
@@ -44,13 +47,17 @@ started yet.
 | Dynamics checkpoint | Generated | Training produces `checkpoints/rnn_dino.pth`; predictive quality has not yet been validated. |
 | Controller policy | Prototype | A linear policy maps the current 16-dimensional VAE latent and 256-dimensional RNN hidden state to four action logits. |
 | Controller training | Implemented | Runs 50 real Chrome episodes and updates the controller with normalized-return REINFORCE while keeping the VAE and MDN-RNN frozen. |
-| Controller checkpoint | Generated | Training produces `checkpoints/controller_dino.pth`; independent policy evaluation has not yet been implemented. |
+| Controller checkpoint | Generated, unsuccessful evaluation | `checkpoints/controller_dino.pth` loads in the evaluation pipeline, but the resulting policy has not demonstrated reliable gameplay. |
+| Real-game evaluation | Prototype | `evaluate_controller.py` runs the controller deterministically in Chrome and displays episode, action, step, and reward telemetry. The initial evaluation failed to establish a useful policy. |
+| Dream rollout | Prototype | `dream_hallucination.py` samples the MDN-RNN, decodes predicted latents, and generated `dino_dream.mp4`; dream quality has not been validated quantitatively. |
 | Imagined policy learning | Planned | Controller or actor-critic training inside sampled MDN-RNN trajectories is not implemented yet. |
-| Evaluation and tests | Planned | Reproducible benchmarks and automated tests still need to be added. |
+| Evaluation benchmarks and tests | Planned | Random/scripted baselines, repeated evaluation metrics, and automated tests still need to be added. |
 
-The random collector still generates exploratory training data only. The new
-controller does learn from rewards, but it is an early online policy-gradient
-prototype and should not be interpreted as a complete world-model agent.
+The weighted-random collector produced enough data to exercise the complete
+training pipeline, but not enough evidence of useful learned behavior. The
+generated checkpoints are experimental artifacts rather than validated models.
+Manual gameplay collection, explicit episode metadata, and behavior-cloning
+pretraining are the next planned steps before another controller evaluation.
 
 ## How the finished system is intended to work
 
@@ -73,6 +80,9 @@ chrome-dino-world-model/
 │   ├── preview_grid.png
 │   └── vae_reconstruction_test.png
 ├── encode_latents.py   # VAE frame-to-latent preprocessing stage
+├── evaluate_controller.py # Deterministic real-game controller evaluation
+├── dream_hallucination.py # Sampled latent rollout and video generation
+├── dino_dream.mp4      # First generated 200-step dream-rollout video
 ├── checkpoints/
 │   ├── controller_dino.pth # Trained controller state dictionary
 │   ├── rnn_dino.pth        # Trained MDN-RNN state dictionary
@@ -276,8 +286,10 @@ optimize the policy in imagined trajectories.
 
 ## Limitations
 
-- A controller checkpoint exists, but there is no separate evaluation runner or
-  evidence yet that it consistently outperforms the random policy.
+- The initial controller evaluation failed to demonstrate reliable gameplay;
+  there is no evidence that it outperforms a random or scripted baseline.
+- The real-game evaluator exists, but it does not yet aggregate metrics across
+  runs, enforce deterministic seeds, or compare policies under matched trials.
 - The environment relies on Chrome's internal `runnerInstance` JavaScript API,
   which may change between Chrome versions.
 - Browser and keyboard behavior has not yet been tested across operating
@@ -286,6 +298,8 @@ optimize the policy in imagined trajectories.
   explicit episode boundaries are not preserved in the dataset yet.
 - The current collector overwrites its fixed output paths instead of versioning
   collection runs.
+- Weighted-random collection produces many low-value transitions and does not
+  capture the timing and action quality of successful human gameplay.
 - VAE training uses the full dataset without a train/validation split, early
   stopping, checkpoint metadata, or quantitative validation metrics.
 - VAE hyperparameters are currently hard-coded, and the declared KL-tolerance
@@ -301,8 +315,9 @@ optimize the policy in imagined trajectories.
   clipping, checkpoint metadata, or quantitative prediction benchmarks.
 - Log-standard-deviations are unconstrained before exponentiation, which may
   require clamping for robust training on larger or more varied datasets.
-- The recurrent checkpoint has not yet been used for sampled future rollouts,
-  multi-step prediction visualization, or latent imagination.
+- The recurrent checkpoint has been used for a sampled dream rollout, but the
+  rollout has no reward/termination model and its visual or predictive quality
+  has not been measured.
 - Controller training uses vanilla Monte Carlo REINFORCE without a learned
   value baseline, entropy bonus, advantage estimation, or gradient clipping.
 - Controller episodes have no explicit maximum length, and training does not
@@ -314,18 +329,23 @@ optimize the policy in imagined trajectories.
 
 ## Roadmap
 
+- Add manual-play collection with consistent sampling and aligned action labels.
+- Store rewards, terminal flags, timestamps, and episode IDs for every sample.
+- Retrain the VAE and MDN-RNN on curated human gameplay without allowing
+  recurrent training windows to cross episode boundaries.
+- Add behavior-cloning pretraining from recorded human actions before online
+  controller fine-tuning.
 - Stabilize and test the game environment across platforms.
 - Complete reproducible dependency and runtime configuration.
-- Extend collection to store rewards, terminal flags, and episode boundaries.
 - Make sequence generation episode-aware and add train/validation splits.
 - Add VAE validation, configurable hyperparameters, and quantitative metrics.
 - Evaluate and improve latent representations for downstream dynamics learning.
 - Add MDN-RNN validation, gradient clipping, and configurable hyperparameters.
 - Evaluate next-latent predictions across multiple time horizons.
-- Implement mixture sampling and visualize imagined latent rollouts.
+- Validate and improve the implemented mixture-sampled dream rollouts.
 - Add reward and continuation prediction heads.
-- Build a deterministic controller evaluation runner and compare it with random
-  and scripted baselines.
+- Extend the deterministic controller evaluation runner with random and scripted
+  baselines plus aggregate survival and reward metrics.
 - Train an actor-critic policy using imagined latent trajectories.
 - Compare imagined policy learning against online and model-free baselines.
 - Add checkpoints, metrics, visualizations, and reproducible evaluations.
