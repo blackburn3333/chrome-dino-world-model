@@ -44,7 +44,16 @@ def evaluate_controller(num_episodes: int = 3):
   rnn.eval()
 
   # 3. Load Controller (C)
-  controller_path = "checkpoints/controller_dino.pth"
+  bc_controller_path = "checkpoints/controller_bc_dino.pth"
+  online_controller_path = "checkpoints/controller_dino.pth"
+  # Prefer the policy that directly learned the human demonstrations. The older
+  # online checkpoint remains a fallback for repositories that have not run the
+  # behavior-cloning stage yet.
+  controller_path = (
+      bc_controller_path
+      if os.path.exists(bc_controller_path)
+      else online_controller_path
+  )
   if not os.path.exists(controller_path):
     raise FileNotFoundError(f"Missing Controller weights at {controller_path}")
   controller = Controller(z_dim=16, hidden_dim=256, action_dim=4).to(device)

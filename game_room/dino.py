@@ -176,7 +176,15 @@ class ChromeDinoEnv:
             "document.dispatchEvent(new KeyboardEvent('keydown', {'key': 'ArrowDown', 'keyCode': 40, 'which': 40}));"
         )
 
-    # Capture the observation after input, then query the terminal game state.
+    return self.observe()
+
+  def observe(self) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
+    """Observe a transition without injecting keyboard input.
+
+    Manual collection uses this method because the player's physical key press
+    has already reached the focused Chrome window. Calling ``step`` there would
+    send every human action a second time.
+    """
     frame = self._get_screen_frame()
     is_crashed = self._check_crashed()
 

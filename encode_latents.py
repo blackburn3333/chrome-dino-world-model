@@ -13,6 +13,9 @@ from train_vae import ConvVAE
 # fallback for machines without a compatible accelerator.
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Keep the source path in one place so manual and automated collection runs use
+# the same encoder without duplicating a string throughout the function.
+DATASET_PATH = "dataset/dino_data.npz"
 
 def encode_dataset() -> None:
   """Convert collected frames into deterministic VAE latent representations.
@@ -47,7 +50,7 @@ def encode_dataset() -> None:
 
   # Step 2: Load observations and their aligned action IDs. The action sequence
   # is copied unchanged into the latent archive for later transition modeling.
-  data = np.load("dataset/dino_data.npz")
+  data = np.load(DATASET_PATH)
   frames = data["frames"]  # (N, 64, 64)
   actions = data["actions"]  # (N,)
 
@@ -78,7 +81,14 @@ def encode_dataset() -> None:
   # Step 3: Save latent observations and matching actions together. Compression
   # reduces storage while named arrays keep downstream loading unambiguous.
   save_path = "dataset/dino_latents.npz"
-  np.savez_compressed(save_path, latents=latents_arr, actions=actions)
+  output = {"latents": latents_arr, "actions": actions}
+  # Temporal metadata must remain sample-aligned with the encoded observations.
+  # Passing it through here lets the RNN and behavior-cloning stages reset their
+  # hidden states at crashes instead of learning across unrelated episodes.
+  for metadata_key in ("rewards", "dones", "episode_ids", "timestamps"):
+    if metadata_key in data.files:
+      output[metadata_key] = data[metadata_key]
+  np.savez_compressed(save_path, **output)
 
   print(f"Successfully encoded {len(latents_arr)} frames into {latents_arr.shape}")
   print(f"Saved latent dataset to: {save_path}")
